@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -140,6 +141,12 @@ func isNotRussianHtml(e *colly.HTMLElement) bool {
 }
 
 func (w *htmlTextToFileWriter) parseOne(sb *strings.Builder, dir *string, e *colly.HTMLElement, toIndexFile chan<- indexMeta) {
+	decodedUrl, err := url.QueryUnescape(e.Request.URL.String())
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
 	if isNotRussianHtml(e) {
 		return
 	}
@@ -162,7 +169,6 @@ func (w *htmlTextToFileWriter) parseOne(sb *strings.Builder, dir *string, e *col
 	defer file.Close()
 
 	_, err = file.WriteString(text)
-
 	if err != nil {
 		println(err)
 
@@ -175,7 +181,7 @@ func (w *htmlTextToFileWriter) parseOne(sb *strings.Builder, dir *string, e *col
 
 	toIndexFile <- indexMeta{
 		fileId: fileNumber,
-		url:    e.Request.URL.String(),
+		url:    decodedUrl,
 	}
 }
 
