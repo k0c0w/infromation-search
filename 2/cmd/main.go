@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"iter"
 	"log"
 	"main/fileReader"
@@ -9,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 type void = struct{}
@@ -26,20 +30,22 @@ var POS_TAGS map[string]string = map[string]string{
 	"PRED": "_ADP",
 }
 
-var russianLowwerRanges []*unicode.RangeTable = []*unicode.RangeTable{{R16: []unicode.Range16{{0x0430, 0x044f, 1}, {0x0451, 0x0451, 1}, {0x2010, 0x2010, 1}}}}
+var russianLowwerRanges unicode.RangeTable = unicode.RangeTable{R16: []unicode.Range16{{0x0430, 0x044f, 1}, {0x0451, 0x0451, 1}, {0x2010, 0x2010, 1}}}
 
 var STOP_WORDS map[string]void = map[string]void{"и": {}, "в": {}, "во": {}, "не": {}, "что": {}, "он": {}, "на": {}, "я": {}, "с": {}, "со": {}, "как": {}, "а": {}, "то": {}, "все": {}, "она": {}, "так": {}, "его": {}, "но": {}, "да": {}, "ты": {}, "к": {}, "у": {}, "же": {}, "вы": {}, "за": {}, "бы": {}, "по": {}, "только": {}, "ее": {}, "её": {}, "мне": {}, "было": {}, "вот": {}, "от": {}, "меня": {}, "еще": {}, "ещё": {}, "нет": {}, "о": {}, "из": {}, "ему": {}, "теперь": {}, "когда": {}, "даже": {}, "ну": {}, "вдруг": {}, "ли": {}, "если": {}, "уже": {}, "или": {}, "ни": {}, "быть": {}, "был": {}, "него": {}, "до": {}, "вас": {}, "нибудь": {}, "опять": {}, "уж": {}, "вам": {}, "ведь": {}, "там": {}, "потом": {}, "себя": {}, "ничего": {}, "ей": {}, "может": {}, "они": {}, "тут": {}, "где": {}, "есть": {}, "надо": {}, "ней": {}, "для": {}, "мы": {}, "тебя": {}, "их": {}, "чем": {}, "была": {}, "сам": {}, "чтоб": {}, "без": {}, "будто": {}, "чего": {}, "раз": {}, "тоже": {}, "себе": {}, "под": {}, "будет": {}, "ж": {}, "тогда": {}, "кто": {}, "этот": {}, "того": {}, "потому": {}, "этого": {}, "какой": {}, "совсем": {}, "ним": {}, "здесь": {}, "этом": {}, "один": {}, "почти": {}, "мой": {}, "тем": {}, "чтобы": {}, "нее": {}, "сейчас": {}, "были": {}, "куда": {}, "зачем": {}, "всех": {}, "никогда": {}, "можно": {}, "при": {}, "наконец": {}, "два": {}, "об": {}, "другой": {}, "хоть": {}, "после": {}, "над": {}, "больше": {}, "тот": {}, "через": {}, "эти": {}, "нас": {}, "про": {}, "всего": {}, "них": {}, "какая": {}, "много": {}, "разве": {}, "три": {}, "эту": {}, "моя": {}, "впрочем": {}, "хорошо": {}, "свою": {}, "этой": {}, "перед": {}, "иногда": {}, "лучше": {}, "чуть": {}, "том": {}, "нельзя": {}, "такой": {}, "им": {}, "более": {}, "всегда": {}, "конечно": {}, "всю": {}, "между": {}, "ооо": {}}
+
+var Transofrm transform.Transformer = transform.Chain(norm.NFD, transform.RemoveFunc(func(r rune) bool { return unicode.Is(unicode.Mn, r) }), norm.NFC)
 
 func trimNonRussian(word string) string {
 	runes := []rune(word)
 	start := 0
 	end := len(runes) - 1
 
-	for start <= end && !unicode.In(runes[start], unicode.Cyrillic) {
+	for start <= end && !unicode.In(runes[start], &russianLowwerRanges) {
 		start++
 	}
 
-	for end >= start && !unicode.In(runes[end], unicode.Cyrillic) {
+	for end >= start && !unicode.In(runes[end], &russianLowwerRanges) {
 		end--
 	}
 
@@ -54,14 +60,37 @@ func splitSymbols(r rune) bool {
 	return unicode.IsSpace(r) || unicode.IsPunct(r) && r != '-'
 }
 
+func IsLetter(s string) bool {
+	for _, r := range s {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func Is2LettersWithHypen(word string) bool {
+	split := strings.Split(word, "-")
+	if len(split) > 2 {
+		return false
+	}
+
+	if len(split) < 2 {
+		return false
+	}
+
+	return IsLetter(split[0]) && IsLetter(split[1])
+}
+
 func lematizationAndFiltering(words iter.Seq[string]) []string {
 	result := make([]string, 0)
 
 	for complexWord := range words {
-		simplerWords := strings.FieldsFunc(strings.ToLower(complexWord), splitSymbols)
+		normWord := normalizeText(strings.ToLower(complexWord))
+		simplerWords := strings.FieldsFunc(normWord, splitSymbols)
 		for _, word := range simplerWords {
 			word = trimNonRussian(word)
-			if word == "" || len(word) == 1 {
+			if word == "" || Is2LettersWithHypen(word) {
 				continue
 			}
 
@@ -94,6 +123,25 @@ func lematizationAndFiltering(words iter.Seq[string]) []string {
 	}
 
 	return result
+}
+
+func normalizeText(input string) string {
+	r := transform.NewReader(strings.NewReader(input), Transofrm)
+
+	result := make([]byte, 0)
+	b := make([]byte, 8)
+	for {
+		n, err := r.Read(b)
+		for i := 0; i < n; i++ {
+			result = append(result, b[i])
+		}
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	return string(result)
 }
 
 func main() {
