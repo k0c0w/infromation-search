@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -16,6 +17,7 @@ import (
 const IDF_CSV_PATH path = "C:\\CustomDesktop\\informations search\\4\\output\\idf.csv"
 const TF_IDF_CSV_PATH path = "C:\\CustomDesktop\\informations search\\4\\output\\tf-idf.csv"
 const FILE_TO_URL_JSON_PATH path = "C:\\CustomDesktop\\informations search\\2\\output\\index.json"
+const INVERTED_INDEX_JSON_PATH path = "C:\\CustomDesktop\\informations search\\3\\output\\inverted_index.json"
 const MAX_OUTPUT int = 10
 
 type fileId = string
@@ -39,7 +41,9 @@ func (sr *SearchResult) String() string {
 }
 
 func main() {
-	idf, tfIdf, indexMap := load()
+	idf, tfIdf, indexMap, vocab := load()
+	docVectors := calculateDocVectors(tfIdf, vocab)
+
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
 
@@ -49,22 +53,26 @@ func main() {
 		input, _ = reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 		words := strings.Fields(strings.ToLower(input))
-		queryVector := make(map[word]float64)
+		queryTfIdf := make(map[word]float64)
 
 		for _, word := range words {
-			queryVector[word]++
+			queryTfIdf[word]++
 		}
-		for word := range queryVector {
+		for word := range queryTfIdf {
 			if idfValue, exists := idf[word]; exists {
-				queryVector[word] *= idfValue
-			} else {
-				delete(queryVector, word)
+				queryTfIdf[word] *= idfValue / float64(len(words))
+			}
+		}
+		queryVector := make([]float64, len(vocab))
+		for i, word := range vocab {
+			if tfIdfValue, exists := queryTfIdf[word]; exists {
+				queryVector[i] = tfIdfValue
 			}
 		}
 
 		var results []SearchResult
-		for fileId, tfIdfVector := range tfIdf {
-			similarityScore := cosineSimilarity(queryVector, tfIdfVector)
+		for fileId, docVector := range docVectors {
+			similarityScore := cosineSimilarity(queryVector, docVector)
 			if similarityScore > 0 {
 				results = append(results, SearchResult{
 					FileId: fileId,
@@ -96,19 +104,14 @@ func main() {
 	}
 }
 
-func cosineSimilarity(vec1, vec2 map[word]float64) float64 {
+func cosineSimilarity(vec1, vec2 []float64) float64 {
 	var productSum, normA, normB float64
 
-	for word, a := range vec1 {
-		b := vec2[word]
+	for i, a := range vec1 {
+		b := vec2[i]
+
 		productSum += a * b
-	}
-
-	for _, a := range vec1 {
 		normA += a * a
-	}
-
-	for _, b := range vec2 {
 		normB += b * b
 	}
 
@@ -138,9 +141,53 @@ func loadFileToUrlMapping() map[fileId]url {
 	return result
 }
 
+func loadVocabFromInverteIndex() []word {
+	file, err := os.Open(INVERTED_INDEX_JSON_PATH)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	bytes, err := io.ReadAll(file)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(bytes, &data); err != nil {
+		log.Fatal(err)
+	}
+
+	var allWords []word = make([]word, 0, len(data))
+	for word := range data {
+		allWords = append(allWords, word)
+	}
+
+	sort.Strings(allWords)
+
+	return allWords
+}
+
 func parseFloat(s string) float64 {
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
+}
+
+func calculateDocVectors(tfIdf map[fileId]map[word]float64, vocab []word) (vectors map[fileId][]float64) {
+	vectors = make(map[fileId][]float64, len(tfIdf))
+
+	for fileId, concretteTfIdf := range tfIdf {
+		vector := make([]float64, len(vocab))
+		for i, word := range vocab {
+			if value, wordExists := concretteTfIdf[word]; wordExists {
+				vector[i] = value
+			}
+		}
+
+		vectors[fileId] = vector
+	}
+
+	return
 }
 
 func loadTfIdf() map[fileId]map[word]float64 {
@@ -190,10 +237,11 @@ func loadIdf() map[word]float64 {
 	return idf
 }
 
-func load() (idf map[word]float64, tfIdf map[fileId]map[word]float64, indexMap map[fileId]url) {
+func load() (idf map[word]float64, tfIdf map[fileId]map[word]float64, indexMap map[fileId]url, vocab []word) {
 	idf = loadIdf()
 	tfIdf = loadTfIdf()
 	indexMap = loadFileToUrlMapping()
+	vocab = loadVocabFromInverteIndex()
 
 	return
 }
